@@ -1,0 +1,20 @@
+# Test cases for Problem 4, written in plain arithmetic. The autograder
+# parses the left side with the ANTLR grammar (Arith.g4) and ExprBuilder
+# into the student's Num/Add/Sub/Mul/Div objects, calls eval(), and
+# compares with the right side.
+#
+# Format:   expression => expected      ("error" means ArithmeticException)
+# Lines starting with # are comments. Java's long division rounds toward zero.
+
+2 + 3 * 4            => 14
+(2 + 3) * 4          => 20
+10 - 4 - 3           => 3
+100 / 10 / 5         => 2
+-7 / 2               => -3
+7 / -2               => -3
+2 * -3               => -6
+- - 5                => 5
+((((42))))           => 42
+1 / (2 - 2)          => error
+5 + 1 / 0 * 3        => error
+0 / 7                => 0

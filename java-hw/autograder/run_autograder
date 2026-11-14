@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Gradescope entry point for HW2 (Java).
+# Set AG_ROOT to run locally (see ../../run_local.sh).
+
+set -u
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+AG_ROOT="${AG_ROOT:-/autograder}"
+SRC="$AG_ROOT/source"
+SUB="$AG_ROOT/submission"
+RES="$AG_ROOT/results"
+WORK="$(mktemp -d)"
+mkdir -p "$RES"
+
+fail_all() {
+  python3 - "$1" "$RES/results.json" <<'PY'
+import json, sys
+msg, out = sys.argv[1], sys.argv[2]
+json.dump({"score": 0, "output": msg, "visibility": "visible"}, open(out, "w"))
+PY
+  exit 0
+}
+
+clean() { grep -v "^Picked up JAVA_TOOL_OPTIONS" "$1" | sed "s|$WORK/||g" | head -n 40; }
+
+# 0. Locate ANTLR: the tool generates the lexer/parser, the jar is the runtime.
+#    Ubuntu/Gradescope: apt package antlr4. macOS: brew install antlr.
+ANTLR_JAR="${ANTLR_JAR:-}"
+if [ -z "$ANTLR_JAR" ]; then
+  for j in /usr/share/java/antlr4-runtime.jar \
+           /opt/homebrew/opt/antlr/antlr-*-complete.jar /opt/homebrew/opt/antlr/libexec/antlr-*-complete.jar \
+           /usr/local/opt/antlr/antlr-*-complete.jar /usr/local/opt/antlr/libexec/antlr-*-complete.jar; do
+    [ -f "$j" ] && { ANTLR_JAR="$j"; break; }
+  done
+fi
+if command -v antlr4 > /dev/null; then ANTLR_TOOL=(antlr4)
+elif command -v antlr > /dev/null; then ANTLR_TOOL=(antlr)
+elif [ -n "$ANTLR_JAR" ]; then ANTLR_TOOL=(java -cp "$ANTLR_JAR" org.antlr.v4.Tool)
+else fail_all "Autograder setup error (ANTLR not installed). Please tell the instructor."
+fi
+[ -n "$ANTLR_JAR" ] || fail_all "Autograder setup error (ANTLR runtime jar not found). Please tell the instructor."
+
+# 1. Collect the required files (search subfolders too).
+for f in GenericStack.java Generics.java ParallelSum.java Exprs.java; do
+  path="$(find "$SUB" -name "$f" -type f | head -n 1)"
+  [ -n "$path" ] || fail_all "Missing $f. Submit GenericStack.java, Generics.java, ParallelSum.java and Exprs.java."
+  cp "$path" "$WORK/$f"
+done
+
+# Students must not change package names: files go in the default package.
+if grep -l '^[[:space:]]*package ' "$WORK"/*.java > /dev/null 2>&1; then
+  fail_all "Remove the 'package ...' line from your files. They must be in the default package."
+fi
+
+# 2. Compile the student's code first (with only the provided files), so a
+#    student error is reported as theirs.
+mkdir -p "$WORK/build"
+cp "$SRC/Pair.java" "$SRC/Expr.java" "$WORK/"
+if ! javac -d "$WORK/build" "$WORK"/*.java > "$WORK/compile.log" 2>&1; then
+  fail_all "Your code did not compile, so no tests could run. Compiler output:
+
+$(clean "$WORK/compile.log")"
+fi
+
+# 3. Generate the ANTLR lexer, parser and visitor, then build the tests.
+mkdir -p "$WORK/tests"
+cp "$SRC/Arith.g4" "$SRC/ExprBuilder.java" "$SRC/GradedTest.java" "$SRC/GradedTestFactory.java" \
+   "$SRC/HW2Tests.java" "$SRC/Runner.java" "$SRC/eval_cases.txt" "$WORK/tests/"
+( cd "$WORK/tests" && "${ANTLR_TOOL[@]}" -visitor -no-listener Arith.g4 ) > "$WORK/gen.log" 2>&1 \
+  || fail_all "Autograder setup error (ANTLR generation failed). Please tell the instructor."
+if ! javac -cp "$WORK/build:$ANTLR_JAR" -d "$WORK/build" "$WORK"/tests/*.java > "$WORK/build.log" 2>&1; then
+  fail_all "Your files compiled, but a class name or constructor does not match the starter files, so the tests could not be built. Details:
+
+$(clean "$WORK/build.log")"
+fi
+
+# 4. Run.
+cd "$WORK"
+timeout 120 java -Xmx512m -Dexprs.source="$WORK/Exprs.java" -Deval.cases="$WORK/tests/eval_cases.txt" \
+  -cp "build:$ANTLR_JAR" Runner "$RES/results.json" 2>&1 | grep -v "^Picked up JAVA_TOOL_OPTIONS"
+[ -s "$RES/results.json" ] \
+  || fail_all "The test runner stopped unexpectedly (time limit or crash). Check for infinite loops or deadlocks."

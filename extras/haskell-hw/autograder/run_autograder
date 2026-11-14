@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Gradescope entry point for HW1 (Haskell).
+# Gradescope layout: /autograder/source (this folder), /autograder/submission
+# (student files) and /autograder/results/results.json (output).
+# Set AG_ROOT to run the same script locally (see ../../run_local.sh).
+
+set -u
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+AG_ROOT="${AG_ROOT:-/autograder}"
+SRC="$AG_ROOT/source"
+SUB="$AG_ROOT/submission"
+RES="$AG_ROOT/results"
+WORK="$(mktemp -d)"
+mkdir -p "$RES"
+
+fail_all() {
+  # $1 = message shown to the student; every test gets 0.
+  python3 - "$1" "$RES/results.json" <<'PY'
+import json, sys
+msg, out = sys.argv[1], sys.argv[2]
+json.dump({"score": 0, "output": msg, "visibility": "visible"}, open(out, "w"))
+PY
+  exit 0
+}
+
+# 1. Find the submission (students sometimes upload a folder or rename the file).
+STUDENT_FILE="$(find "$SUB" -name 'HW1.hs' -type f | head -n 1)"
+[ -n "$STUDENT_FILE" ] || fail_all "Could not find HW1.hs in your submission. Upload exactly one file named HW1.hs."
+
+cp "$STUDENT_FILE" "$WORK/HW1.hs"
+cp "$SRC/Tests.hs" "$SRC/ExprLexer.x" "$SRC/ExprParser.y" "$SRC/eval_cases.txt" "$WORK/"
+
+# 2a. Generate the lexer (Alex) and parser (Happy) used to read eval_cases.txt.
+( cd "$WORK" && alex ExprLexer.x -o ExprLexer.hs && happy ExprParser.y -o ExprParser.hs ) > "$WORK/gen.log" 2>&1 \
+  || fail_all "Autograder setup error (lexer/parser generation failed). Please tell the instructor."
+
+# 2b. Compile. A compile error gets a clear message instead of a crash.
+if ! ghc -O0 -package array -i"$WORK" -outputdir "$WORK/build" -o "$WORK/tests" "$WORK/Tests.hs" > "$WORK/compile.log" 2>&1; then
+  fail_all "Your code did not compile, so no tests could run. Compiler output:
+
+$(grep -v '^\[' "$WORK/compile.log" | sed "s|$WORK/||g" | head -n 40)
+
+Tip: keep the module name, exports and type signatures exactly as in the starter file."
+fi
+
+# 3. Run the tests (overall time limit protects against hangs outside tests).
+cd "$WORK"
+HW1_SOURCE="$WORK/HW1.hs" EVAL_CASES="$WORK/eval_cases.txt" RESULTS_JSON="$RES/results.json" timeout 120 ./tests \
+  || [ -s "$RES/results.json" ] \
+  || fail_all "The test runner stopped unexpectedly (time limit or crash). Check for infinite loops."

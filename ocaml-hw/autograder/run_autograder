@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Gradescope entry point for HW1 (OCaml).
+# Gradescope layout: /autograder/source (this folder), /autograder/submission
+# (student files) and /autograder/results/results.json (output).
+# Set AG_ROOT to run the same script locally (see ../../run_local.sh).
+
+set -u
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+AG_ROOT="${AG_ROOT:-/autograder}"
+SRC="$AG_ROOT/source"
+SUB="$AG_ROOT/submission"
+RES="$AG_ROOT/results"
+WORK="$(mktemp -d)"
+mkdir -p "$RES"
+
+fail_all() {
+  python3 - "$1" "$RES/results.json" <<'PY'
+import json, sys
+msg, out = sys.argv[1], sys.argv[2]
+json.dump({"score": 0, "output": msg, "visibility": "visible"}, open(out, "w"))
+PY
+  exit 0
+}
+
+# 1. Find the submission.
+STUDENT_FILE="$(find "$SUB" -iname 'hw1.ml' -type f | head -n 1)"
+[ -n "$STUDENT_FILE" ] || fail_all "Could not find hw1.ml in your submission. Upload exactly one file named hw1.ml."
+cp "$STUDENT_FILE" "$WORK/hw1.ml"
+cp "$SRC/tests.ml" "$SRC/lexer.mll" "$SRC/parser.mly" "$SRC/eval_cases.txt" "$WORK/"
+cd "$WORK"
+
+# 2. Compile the student's file on its own first, so a student error is
+#    reported as theirs and an autograder error as ours.
+if ! ocamlopt -c hw1.ml > compile.log 2>&1; then
+  fail_all "Your code did not compile, so no tests could run. Compiler output:
+
+$(sed "s|$WORK/||g" compile.log | head -n 40)
+
+Tip: keep every name and type exactly as in the starter file."
+fi
+
+# 3. Generate the lexer (ocamllex) and parser (ocamlyacc), then build the tests.
+#    unix gives us alarm() for per-test time limits.
+if ! { ocamllex -q lexer.mll && ocamlyacc parser.mly &&
+       ocamlopt -I +unix unix.cmxa hw1.cmx parser.mli parser.ml lexer.ml tests.ml -o tests; } > build.log 2>&1; then
+  # The test suite is known to build against the reference solution, so a
+  # failure here means the student's names or types differ from the starter.
+  fail_all "Your file compiled, but its names or types do not match the starter file, so the tests could not be built. Details:
+
+$(sed "s|$WORK/||g" build.log | head -n 30)"
+fi
+
+# 4. Run.
+HW1_SOURCE="$WORK/hw1.ml" EVAL_CASES="$WORK/eval_cases.txt" RESULTS_JSON="$RES/results.json" timeout 180 ./tests \
+  || [ -s "$RES/results.json" ] \
+  || fail_all "The test runner stopped unexpectedly (time limit or crash). Check for infinite loops."
